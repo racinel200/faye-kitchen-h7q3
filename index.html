@@ -125,7 +125,7 @@ footer{text-align:center;font-size:11px;color:var(--muted);padding:20px 0 10px}
   <section class="view" id="v-plan"></section>
   <section class="view" id="v-list"></section>
   <section class="view" id="v-checkout"></section>
-  <footer>build <span id="build">2026-10-29a</span></footer>
+  <footer>build <span id="build">2026-10-29b</span></footer>
 </main>
 
 <div class="composer" id="composer">
@@ -146,9 +146,9 @@ footer{text-align:center;font-size:11px;color:var(--muted);padding:20px 0 10px}
 <script>
 const API = "https://wopiuwndpuxzywtchbtt.supabase.co/functions/v1/kitchen";
 const STORES = {
-  heb: { name: "H-E-B", color: "var(--heb)", cart: true },
+  heb: { name: "H-E-B", color: "var(--heb)", cart: true, mode: "Curbside" },
   wholefoods: { name: "Whole Foods", color: "var(--wf)", cart: true },
-  walmart: { name: "Walmart", color: "var(--wm)", cart: false },
+  walmart: { name: "Walmart", color: "var(--wm)", cart: true, mode: "Delivery" },
 };
 let TOKEN = null, S = null, view = "chat", busyChat = false, pollT = null;
 const ui = { slot: {}, mode: {}, pin: {}, err: {}, adding: false };
@@ -283,7 +283,6 @@ function itemCard(i) {
         <button class="btn sm" data-pick="${i.id}:${n}">Add</button></div>`).join("") +
       `</div><button class="btn sm ghost" data-refind="${i.id}">${c[0]?.usual ? "See other options" : "Search again"}</button></div>`;
   }
-  if (!st.cart && !["done"].includes(i.status)) acts = `<button class="btn sm ghost" data-got="${i.id}">Got it ✓</button><a class="btn sm ghost" href="https://www.walmart.com/search?q=${encodeURIComponent(i.name)}" target="_blank" rel="noopener">Find on Walmart</a>`;
   if (i.status === "in_cart" && i.product?.title) acts = `<span class="small muted">${esc(i.product.title)}${i.product.price ? " · " + esc(i.product.price) : ""}</span>`;
   const err = i.error && ["error", "not_found"].includes(i.status) ? `<div class="err">${esc(i.error)}</div>` : "";
   return `<div class="item"><div class="top"><div class="nm">${esc(i.name)}<div class="sub">${[i.qty, i.meal].filter(Boolean).map(esc).join(" · ")}</div></div>
@@ -299,14 +298,7 @@ function renderCheckout() {
     <div class="muted small">Pick 4 digits only you know. You'll enter it every time you place an order.</div>
     <div class="pin"><input id="newpin" inputmode="numeric" maxlength="4" pattern="\\d{4}" placeholder="••••"><button class="btn" data-setpin>Save PIN</button></div></div>`;
   for (const [k, st] of Object.entries(STORES)) {
-    if (!st.cart) {
-      const mine = S.items.filter((i) => i.store === k);
-      h += `<div class="card"><div class="store-h" style="margin:0 0 6px"><span class="bar" style="background:${st.color}"></span><h2>${st.name}</h2>
-        <a class="btn sm ghost" href="https://www.walmart.com/cart" target="_blank" rel="noopener">Open cart</a></div>
-        <div class="small muted">Walmart's cart can't be read from here yet. Open it in the Walmart app to see it.</div>
-        ${mine.length ? `<div class="small" style="margin-top:8px"><b>On your list for Walmart</b></div><ul class="lines">${mine.map((i) => `<li>${esc(i.name)}${i.qty ? ` <span class="muted">${esc(i.qty)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>`;
-      continue;
-    }
+    if (!st.cart) continue;
     const co = S.checkouts.find((c) => c.store === k);
     const snap = S.carts.find((c) => c.store === k);
     const cart = snap?.snapshot;
@@ -335,6 +327,7 @@ function checkoutBody(k, co, cart) {
     const n = cart?.lines?.length;
     let h = cart ? `<div class="small muted">${n} item${n === 1 ? "" : "s"} in the cart${cart.subtotal ? ` · $${Number(cart.subtotal).toFixed(2)}` : ""}</div>${lineList(cart.lines)}` : `<div class="small muted">Tap Refresh cart to see what's in it.</div>`;
     if (k === "heb") h += `<div class="chips">${["Curbside", "Delivery"].map((m) => `<button class="${(ui.mode[k] || "Curbside") === m ? "sel" : ""}" data-mode="${k}:${m}">${m}</button>`).join("")}</div>`;
+    if (k === "walmart") h += `<div class="small muted" style="margin-top:4px">${cart?.mode === "Delivery" ? "InHome delivery to the house." : cart?.mode ? "The cart is set to " + esc(cart.mode).toLowerCase() + " — open the Walmart app, tap Delivery in the cart, then Refresh here." : ""}</div>`;
     return h + `<button class="btn" data-costart="${k}" style="margin-top:6px">Checkout</button>`;
   }
   const s = live.status, rv = live.review || {};
@@ -344,7 +337,17 @@ function checkoutBody(k, co, cart) {
   }
   if (s === "failed") return `<div class="err">${esc(live.error || "Something went wrong.")}</div><button class="btn sm ghost" style="margin-top:8px" data-costart="${k}">Try again</button>`;
   let h = `<div class="small muted">Everything below gets ordered — not just what you added.</div>${lineList(rv.lines)}`;
-  if (k === "heb") {
+  if (k === "walmart") {
+    const rs = live.result || {};
+    h += `<div class="kv"><span>Items subtotal</span><b>${rv.subtotal != null ? "$" + Number(rv.subtotal).toFixed(2) : "—"}</b><span>How</span><b>InHome delivery</b></div>`;
+    const slots = rv.slots || [];
+    h += `<div class="small" style="margin-top:6px"><b>Delivery window</b></div><div class="chips">${slots.length ? slots.map((x) => `<button class="${ui.slot[live.id] === x || live.slot === x ? "sel" : ""}" data-slot="${live.id}:${esc(x)}">${esc(x)}</button>`).join("") : `<span class="muted small">No windows showing. Open the Walmart app to pick one.</span>`}</div>`;
+    if (s === "review_ready") {
+      const pick = ui.slot[live.id];
+      h += `<button class="btn" ${pick ? "" : "disabled"} data-total="${live.id}">Get final total</button><div class="small muted" style="margin-top:4px">Opens checkout to read the real total. Nothing is ordered yet.</div>`;
+    }
+    if (s === "total_ready") h += `<div class="kv" style="margin-top:6px">${rs.delivery_fee != null ? `<span>Delivery</span><b>${esc(String(rs.delivery_fee))}</b>` : ""}${rs.tax != null ? `<span>Tax</span><b>$${Number(rs.tax).toFixed(2)}</b>` : ""}${rs.tip ? `<span>Tip</span><b>${esc(String(rs.tip))}</b>` : ""}${rs.card ? `<span>Card</span><b>${esc(rs.card)}</b>` : ""}</div>`;
+  } else if (k === "heb") {
     h += `<div class="kv"><span>Items subtotal</span><b>${rv.subtotal != null ? "$" + Number(rv.subtotal).toFixed(2) : "—"}</b><span>How</span><b>${esc(rv.mode || live.mode || "Curbside")}</b></div>`;
     const days = (rv.days || []).map((d) => ({ raw: d, word: d.split(" ")[0], label: d.replace(/\s*\[selected\]/, "").replace(/\s+Free$/, ""), sel: /\[selected\]/.test(d) }));
     h += `<div class="small" style="margin-top:6px"><b>Day</b></div><div class="chips">${days.map((d) => `<button class="${d.sel ? "sel" : ""}" data-day="${live.id}:${esc(d.word)}">${esc(d.label)}</button>`).join("")}</div>`;
@@ -362,10 +365,11 @@ function checkoutBody(k, co, cart) {
       ${rv.window ? `<span>Arrives</span><b>${esc(rv.window)}</b>` : ""}
       ${rv.hold ? `<span>Card hold</span><b>$${Number(rv.hold).toFixed(2)}</b>` : ""}</div>`;
   }
-  const ready = (k === "heb" && s === "total_ready") || (k !== "heb" && s === "review_ready");
+  const twoStep = k === "heb" || k === "walmart";
+  const ready = (twoStep && s === "total_ready") || (!twoStep && s === "review_ready");
   if (ready && live.total != null) {
     h += `<div style="margin-top:10px" class="muted small">Total</div><div class="total">$${Number(live.total).toFixed(2)}</div>
-      ${k === "heb" ? `<div class="small muted">${esc(live.mode)} · ${esc(live.day)} ${esc(live.slot)}</div>` : ""}
+      ${k === "heb" ? `<div class="small muted">${esc(live.mode)} · ${esc(live.day)} ${esc(live.slot)}</div>` : k === "walmart" ? `<div class="small muted">${esc(live.slot || "")}</div>` : ""}
       <div class="pin"><input id="pin-${live.id}" inputmode="numeric" maxlength="4" placeholder="PIN">
       <button class="btn warn" data-place="${live.id}:${live.total}">Place order</button></div>`;
   }
@@ -386,13 +390,13 @@ document.addEventListener("click", async (e) => {
   if (d.cartref) { t.disabled = true; await act("cart_refresh", { store: d.cartref }); toast("Checking the cart…"); }
   if (d.got) await act("item_got", { id: +d.got });
   if (d.mode) { const [k, m] = d.mode.split(":"); ui.mode[k] = m; render(); }
-  if (d.costart) { t.disabled = true; await act("checkout_start", { store: d.costart, mode: ui.mode[d.costart] || "Curbside" }); }
+  if (d.costart) { t.disabled = true; await act("checkout_start", { store: d.costart, mode: ui.mode[d.costart] || STORES[d.costart].mode || "Curbside" }); }
   if (d.day) { const [id, day] = d.day.split(":"); const co = S.checkouts.find((c) => c.id == id); delete ui.slot[id]; await act("checkout_day", { checkout_id: +id, day, mode: co?.review?.mode || co?.mode || "Curbside" }); }
   if (d.slot) { const i = d.slot.indexOf(":"); ui.slot[d.slot.slice(0, i)] = d.slot.slice(i + 1); render(); }
   if (d.total) {
     const co = S.checkouts.find((c) => c.id == d.total);
-    const day = (co.review?.days || []).find((x) => /\[selected\]/.test(x))?.split(" ")[0] || co.day;
-    t.disabled = true; await act("checkout_total", { checkout_id: co.id, mode: co.review?.mode || co.mode || "Curbside", day, slot: ui.slot[co.id] });
+    const day = co.store === "walmart" ? null : ((co.review?.days || []).find((x) => /\[selected\]/.test(x))?.split(" ")[0] || co.day);
+    t.disabled = true; await act("checkout_total", { checkout_id: co.id, mode: co.review?.mode || co.mode || STORES[co.store].mode || "Curbside", day, slot: ui.slot[co.id] });
   }
   if (d.place) {
     const [id, tot] = d.place.split(":"); const pin = $("#pin-" + id)?.value || "";
