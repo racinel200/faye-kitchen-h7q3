@@ -67,6 +67,11 @@ nav.tabs .badge{position:absolute;top:5px;left:calc(50% + 6px);background:var(--
 .composer form{max-width:640px;margin:0 auto;display:flex;gap:8px;align-items:flex-end}
 .composer textarea{resize:none;max-height:120px;border-radius:20px;padding:10px 14px}
 .composer .btn{border-radius:50%;width:44px;height:44px;padding:0;flex:none}
+.composer .mic{background:var(--green-soft);color:var(--green)}
+.composer .mic.on{background:var(--tomato);color:#fff;animation:pulse 1.2s infinite}
+.composer .mic[hidden]{display:none}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(194,69,45,.45)}70%{box-shadow:0 0 0 10px rgba(194,69,45,0)}}
+@media (prefers-reduced-motion:reduce){.composer .mic.on{animation:none}}
 .starters{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
 .starters button{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:8px 12px;font-size:14px}
 /* plan */
@@ -125,11 +130,12 @@ footer{text-align:center;font-size:11px;color:var(--muted);padding:20px 0 10px}
   <section class="view" id="v-plan"></section>
   <section class="view" id="v-list"></section>
   <section class="view" id="v-checkout"></section>
-  <footer>build <span id="build">2026-10-29b</span></footer>
+  <footer>build <span id="build">2026-10-30a</span></footer>
 </main>
 
 <div class="composer" id="composer">
   <form id="chatform" autocomplete="off">
+    <button type="button" class="btn mic" id="micbtn" aria-label="Talk" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <textarea id="chatin" rows="1" placeholder="Ask about meals, or say what you need…"></textarea>
     <button class="btn" id="sendbtn" aria-label="Send"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
   </form>
@@ -209,12 +215,12 @@ function renderChat() {
   let h = "";
   if (!S.messages.length) {
     h += `<div class="card"><h2 style="font-size:20px;margin-bottom:6px">Hi Angie 👋</h2>
-      <div class="muted">Tell me what sounds good this week, what you're craving, or what's in the fridge. I'll suggest meals, and anything you want goes on the list. From there it can go straight into the H-E-B, Whole Foods or Walmart cart.</div></div>
+      <div class="muted">Tell me what sounds good this week, what you're craving, or what's in the fridge. I'll suggest meals, put things on the list, and when you say so I'll find them at H-E-B, Whole Foods or Walmart and drop them in the cart. Tap the mic to talk instead of typing.</div></div>
       <div class="starters">${["Plan dinners for this week", "Something quick tonight with chicken", "High-protein lunches I can prep", "What can I make with what we have?"]
         .map((s) => `<button data-starter="${esc(s)}">${esc(s)}</button>`).join("")}</div>`;
   }
   for (const m of S.messages) h += `<div class="msg ${m.role}">${m.role === "assistant" ? md(m.content) : esc(m.content).replace(/\n/g, "<br>")}</div>`;
-  if (busyChat) h += `<div class="typing"><span class="spin"></span> Thinking…</div>`;
+  if (busyChat) h += `<div class="typing"><span class="spin"></span> ${S.pending > 0 ? "Checking the store… (can take a minute)" : "Thinking…"}</div>`;
   log.innerHTML = h;
   if (atBottom || busyChat) window.scrollTo(0, document.body.scrollHeight);
 }
@@ -425,13 +431,67 @@ $("#chatform").addEventListener("submit", (e) => { e.preventDefault(); send(); }
 $("#chatin").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); send(); } });
 $("#chatin").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px"; });
 
-async function send() {
+let spoke = false;
+async function send(viaVoice = false) {
   const box = $("#chatin"); const text = box.value.trim(); if (!text || busyChat) return;
-  box.value = ""; box.style.height = "auto";
+  box.value = ""; box.style.height = "auto"; spoke = viaVoice;
+  const lastId = S.messages.length ? S.messages[S.messages.length - 1].id : 0;
   S.messages.push({ role: "user", content: text }); busyChat = true; $("#sendbtn").disabled = true; renderChat();
-  try { S = await api("chat", { message: text }); } catch (err) { toast(err.message); }
+  try {
+    S = await api("chat", { message: text });
+    await waitForReply(lastId);
+  } catch (err) { toast(err.message); }
   busyChat = false; $("#sendbtn").disabled = false; render(); schedule();
 }
+// the reply is written in the background; poll until it shows up (or the server says it's no longer busy)
+async function waitForReply(afterId) {
+  const until = Date.now() + 170000;
+  while (Date.now() < until) {
+    const got = S.messages.find((m) => m.role === "assistant" && m.id > afterId);
+    if (got) { if (spoke) say(got.content); return; }
+    if (!S.chat_pending) return;
+    render();
+    await new Promise((r) => setTimeout(r, 2000));
+    try { S = await api("view"); } catch (e) { /* keep polling */ }
+  }
+}
+
+// ---- voice: tap the mic, talk, it sends when you stop; the reply is read back
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, recActive = false;
+if (SR) {
+  const mic = $("#micbtn"); mic.hidden = false;
+  mic.addEventListener("click", () => {
+    if (recActive) { rec.stop(); return; }
+    if (busyChat) return;
+    try { speechSynthesis.cancel(); } catch (e) {}
+    rec = new SR(); rec.lang = "en-US"; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+    let finalText = "";
+    rec.onstart = () => { recActive = true; mic.classList.add("on"); $("#chatin").placeholder = "Listening…"; };
+    rec.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finalText += t; else interim += t; }
+      $("#chatin").value = (finalText + interim).trim();
+    };
+    rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") toast("Couldn't hear you — check the mic permission"); };
+    rec.onend = () => {
+      recActive = false; mic.classList.remove("on"); $("#chatin").placeholder = "Ask about meals, or say what you need…";
+      if ($("#chatin").value.trim()) send(true);
+    };
+    try { rec.start(); } catch (e) { toast("Mic isn't available here"); }
+  });
+}
+function say(text) {
+  if (!("speechSynthesis" in window)) return;
+  const plain = String(text).replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "").replace(/^\s*[-•*]\s+/gm, "").replace(/\s+/g, " ").trim().slice(0, 1200);
+  if (!plain) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(plain); u.lang = "en-US"; u.rate = 1.02;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) { try { speechSynthesis.cancel(); } catch (e) {} } });
 
 function show(v) {
   view = v;
@@ -450,10 +510,15 @@ function show(v) {
 
 // ---- polling: fast while the stores are working, slow otherwise
 function busy() {
-  return S && (S.pending > 0 || S.items.some((i) => ["searching", "adding"].includes(i.status)) ||
+  return S && (S.pending > 0 || S.chat_pending || S.items.some((i) => ["searching", "adding"].includes(i.status)) ||
     S.checkouts.some((c) => ["reviewing", "totaling", "placing"].includes(c.status)));
 }
 function schedule() {
+  // a reply still being written when the page opened (or re-opened): show the typing dots until it lands, but only if her message is the newest one
+  if (S?.chat_pending && !busyChat && S.messages.length && S.messages[S.messages.length - 1].role === "user") {
+    busyChat = true; const last = [...S.messages].reverse().find((m) => m.role === "assistant")?.id || 0;
+    waitForReply(last).finally(() => { busyChat = false; render(); });
+  }
   clearTimeout(pollT);
   pollT = setTimeout(async () => { if (!document.hidden && !busyChat) { try { S = await api("view"); render(); } catch (e) { } } schedule(); }, busy() ? 3000 : 20000);
 }
