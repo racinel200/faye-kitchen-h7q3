@@ -1,2 +1,3 @@
-# faye-kitchen-h7q3
-Faye family meal planner
+# Faye Kitchen
+
+Meal planner and grocery list for the Faye household. Open it from the link Racine shared.
